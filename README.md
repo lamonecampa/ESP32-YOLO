@@ -39,7 +39,7 @@ cp config/server.example.yaml config/server.yaml
 python -m edge_server.app --config config/server.yaml
 ```
 
-Open `http://<PI_IP>:8000/docs` for the API. The server defaults to a safe CPU-friendly configuration and will use a locally available model file when configured. It does not download model weights automatically.
+Open `http://<PI_IP>:8000/docs` for the API. Start the optional dashboard in a second terminal with `streamlit run edge_server/dashboard.py` and set `EDGE_API_URL=http://127.0.0.1:8000` if needed. The server defaults to a safe CPU-friendly configuration and will use a locally available model file when configured. It does not download model weights automatically.
 
 ## ESP32-CAM firmware
 1. Install Arduino IDE and the Espressif ESP32 board package.
