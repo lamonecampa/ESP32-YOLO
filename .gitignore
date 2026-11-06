@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+config/server.yaml
+firmware/esp32cam_node/secrets.h
+models/
+runs/
+data/
+*.log
+.pytest_cache/
+.DS_Store
