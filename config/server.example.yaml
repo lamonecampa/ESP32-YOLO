@@ -1,0 +1,35 @@
+server:
+  host: 0.0.0.0
+  port: 8000
+  max_upload_bytes: 2000000
+  recent_event_limit: 500
+
+inference:
+  enabled: true
+  model: yolov8n.pt
+  device: cpu
+  image_size: 640
+  confidence: 0.35
+  iou: 0.45
+  classes: null
+
+scheduler:
+  policy: periodic
+  low_threshold: 0.08
+  high_threshold: 0.35
+  weights:
+    motion: 0.30
+    confidence: 0.20
+    urgency: 0.25
+    freshness: 0.25
+  max_frame_age_ms: 2500
+  critical_classes: [0]
+  starvation_limit_ms: 10000
+
+mqtt:
+  enabled: false
+  host: 127.0.0.1
+  port: 1883
+  username: ""
+  password: ""
+  topic_prefix: esp32yolo
