@@ -16,9 +16,7 @@ from fastapi import FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 from ultralytics import YOLO
 
-from edge_server.scheduler.policies import (
-    CameraSignal, SchedulerConfig, classify_priority, priority_score
-)
+from edge_server.scheduler.policies import CameraSignal, SchedulerConfig, priority_score, classify_priority
 
 LOG = logging.getLogger("esp32yolo")
 
@@ -44,8 +42,8 @@ class Runtime:
         self.classes = inf.get("classes")
         if self.inference_enabled:
             model_file = Path(self.model_path)
-            if not model_file.exists() and ("/" in self.model_path or self.model_path.endswith((".pt", ".onnx"))):
-                LOG.warning("Configured model path does not exist: %s; inference disabled", self.model_path)
+            if model_file.suffix in (".pt", ".onnx") and not model_file.exists():
+                LOG.warning("Configured model file does not exist: %s; inference disabled", self.model_path)
                 self.inference_enabled = False
             else:
                 try:
@@ -95,8 +93,7 @@ class Runtime:
 
 
 def create_app(config: dict[str, Any] | None = None) -> FastAPI:
-    if config is None:
-        config = {}
+    config = config or {}
     config.setdefault("server", {})
     config.setdefault("inference", {})
     config.setdefault("scheduler", {})
@@ -110,11 +107,8 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
 
     @app.get("/health")
     def health():
-        return {
-            "status": "ok",
-            "inference_enabled": runtime.inference_enabled,
-            "model_loaded": runtime.model is not None,
-        }
+        return {"status": "ok", "inference_enabled": runtime.inference_enabled,
+                "model_loaded": runtime.model is not None}
 
     @app.get("/api/v1/cameras")
     def cameras():
@@ -129,7 +123,7 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
         x_motion_score: float = Header(default=0.0, alias="X-Motion-Score"),
     ):
         max_bytes = int(config["server"].get("max_upload_bytes", 2_000_000))
-        if not file.content_type or file.content_type not in ("image/jpeg", "application/octet-stream"):
+        if file.content_type not in ("image/jpeg", "application/octet-stream"):
             raise HTTPException(status_code=415, detail="Expected JPEG image")
         data = await file.read(max_bytes + 1)
         if len(data) > max_bytes:
@@ -143,18 +137,18 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="Invalid JPEG payload")
 
         capture_ms = x_capture_timestamp_ms
-        age_ms = max(0.0, time.time() * 1000 - capture_ms) if capture_ms else 0.0
+        age_ms = max(0.0, time.time() * 1000 - capture_ms) if capture_ms else None
         detections = runtime.infer(decoded)
         inference_ms = (time.perf_counter() - started) * 1000
         max_conf = max((d["confidence"] for d in detections), default=0.0)
-        urgency = 1.0 if any(d["class_id"] in [0] for d in detections) else 0.0
+        urgency = 1.0 if any(d["class_id"] == 0 for d in detections) else 0.0
 
         signal = CameraSignal(
             camera_id=x_camera_id,
             motion_score=max(0.0, min(1.0, x_motion_score)),
             last_confidence=max_conf,
             urgency=urgency,
-            age_ms=age_ms,
+            age_ms=age_ms or 0.0,
         )
         score = priority_score(signal, runtime.scheduler_cfg)
         priority = classify_priority(signal, runtime.scheduler_cfg).name.lower()
@@ -197,12 +191,9 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
             p95 = latencies[min(len(latencies)-1, int(0.95 * len(latencies)))] if latencies else None
             counters = dict(runtime.counters)
             cameras_count = len(runtime.cameras)
-        return {
-            **counters,
-            "registered_cameras": cameras_count,
-            "server_latency_p95_ms": p95,
-            "inference_enabled": runtime.inference_enabled,
-        }
+        return {**counters, "registered_cameras": cameras_count,
+                "server_latency_p95_ms": p95,
+                "inference_enabled": runtime.inference_enabled}
 
     @app.get("/api/v1/events")
     def events(limit: int = Query(default=50, ge=1, le=500)):
@@ -214,8 +205,7 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
 
 def load_config(path: str) -> dict[str, Any]:
     with open(path, "r", encoding="utf-8") as stream:
-        loaded = yaml.safe_load(stream) or {}
-    return loaded
+        return yaml.safe_load(stream) or {}
 
 
 def main():
@@ -228,8 +218,7 @@ def main():
     config = load_config(str(config_path))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     import uvicorn
-    app = create_app(config)
-    uvicorn.run(app, host=config.get("server", {}).get("host", "0.0.0.0"),
+    uvicorn.run(create_app(config), host=config.get("server", {}).get("host", "0.0.0.0"),
                 port=int(config.get("server", {}).get("port", 8000)))
 
 
