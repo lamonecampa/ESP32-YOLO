@@ -16,6 +16,6 @@ Copy `secrets.example.h` to `secrets.h` and set Wi-Fi credentials, camera ID, an
 - For flashing, connect GPIO0 to GND and reset; remove GPIO0 from GND after upload and reset again.
 - Serial monitor: 115200 baud.
 
-The firmware transmits periodic JPEG frames. MQTT is optional and disabled by default. When enabled, the node subscribes to `esp32yolo/<camera-id>/control` and publishes status to `esp32yolo/<camera-id>/status`.
+The firmware transmits periodic JPEG frames. The uploaded frame header contains node uptime, not Unix epoch time; this is deliberately not used as an end-to-end latency timestamp until clock synchronization is implemented. MQTT is optional and disabled by default. When enabled, the node subscribes to `esp32yolo/<camera-id>/control` and publishes status to `esp32yolo/<camera-id>/status`.
 
 Current prototype note: capture interval/resolution can be controlled by MQTT, but event score is currently a server-side research input. Local visual change estimation and secure MQTT/TLS are planned hardening tasks.
