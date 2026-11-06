@@ -36,6 +36,7 @@ framesize_t frameSize = FRAMESIZE_QVGA;
 int jpegQuality = 12;
 uint32_t sentFrames = 0;
 uint32_t failedFrames = 0;
+uint32_t lastReconnectMs = 0;
 
 void connectWifi() {
   WiFi.mode(WIFI_STA);
@@ -51,7 +52,7 @@ void connectWifi() {
     Serial.print("Node IP: ");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println("Wi-Fi connection timed out; restart to retry.");
+    Serial.println("Wi-Fi connection timed out; reconnect loop will retry.");
   }
 }
 
@@ -90,33 +91,16 @@ bool initCamera() {
   return true;
 }
 
-void ensureMqtt() {
-#if MQTT_ENABLED
-  if (WiFi.status() != WL_CONNECTED || mqtt.connected()) return;
-  mqtt.setServer(MQTT_HOST, MQTT_PORT);
-  String clientId = "esp32yolo-" + cameraId;
-  bool ok;
-  if (String(MQTT_USER).length()) {
-    ok = mqtt.connect(clientId.c_str(), MQTT_USER, MQTT_PASSWORD);
-  } else {
-    ok = mqtt.connect(clientId.c_str());
-  }
-  if (ok) {
-    String topic = String("esp32yolo/") + cameraId + "/control";
-    mqtt.subscribe(topic.c_str());
-    String statusTopic = String("esp32yolo/") + cameraId + "/status";
-    String payload = String("{\"online\":true,\"ip\":\"") + WiFi.localIP().toString() + "\"}";
-    mqtt.publish(statusTopic.c_str(), payload.c_str(), true);
-  }
-#endif
-}
-
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   String body;
   for (unsigned int i = 0; i < length; i++) body += (char)payload[i];
   if (body.indexOf("\"capture_interval_ms\"") >= 0) {
-    int pos = body.indexOf(':', body.indexOf("capture_interval_ms"));
-    if (pos > 0) captureIntervalMs = constrain(body.substring(pos + 1).toInt(), 500, 60000);
+    int keyPos = body.indexOf("capture_interval_ms");
+    int pos = body.indexOf(':', keyPos);
+    if (pos > 0) {
+      uint32_t requested = (uint32_t)body.substring(pos + 1).toInt();
+      captureIntervalMs = constrain(requested, (uint32_t)250, (uint32_t)60000);
+    }
   }
   if (body.indexOf("\"streaming_enabled\":false") >= 0) streamingEnabled = false;
   if (body.indexOf("\"streaming_enabled\":true") >= 0) streamingEnabled = true;
@@ -130,6 +114,24 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     sensor_t* sensor = esp_camera_sensor_get();
     sensor->set_framesize(sensor, frameSize);
   }
+}
+
+void ensureMqtt() {
+#if MQTT_ENABLED
+  if (WiFi.status() != WL_CONNECTED || mqtt.connected()) return;
+  mqtt.setServer(MQTT_HOST, MQTT_PORT);
+  String clientId = "esp32yolo-" + cameraId;
+  bool ok;
+  if (String(MQTT_USER).length()) ok = mqtt.connect(clientId.c_str(), MQTT_USER, MQTT_PASSWORD);
+  else ok = mqtt.connect(clientId.c_str());
+  if (ok) {
+    String topic = String("esp32yolo/") + cameraId + "/control";
+    mqtt.subscribe(topic.c_str());
+    String statusTopic = String("esp32yolo/") + cameraId + "/status";
+    String payload = String("{\"online\":true,\"ip\":\"") + WiFi.localIP().toString() + "\"}";
+    mqtt.publish(statusTopic.c_str(), payload.c_str(), true);
+  }
+#endif
 }
 
 void handleRoot() {
@@ -164,7 +166,9 @@ bool sendFrame(camera_fb_t* fb) {
   http.setTimeout(10000);
   http.addHeader("Content-Type", "image/jpeg");
   http.addHeader("X-Camera-ID", cameraId);
-  http.addHeader("X-Capture-Timestamp-Ms", String((uint64_t)esp_timer_get_time() / 1000ULL));
+  // ESP timer is monotonic, not Unix time. Server computes frame age only
+  // when a Unix epoch timestamp is supplied, so this header is diagnostic.
+  http.addHeader("X-Node-Uptime-Ms", String((uint64_t)esp_timer_get_time() / 1000ULL));
   http.addHeader("X-Motion-Score", "0");
   int code = http.POST(fb->buf, fb->len);
   http.end();
@@ -199,6 +203,11 @@ void setup() {
 
 void loop() {
   web.handleClient();
+  if (WiFi.status() != WL_CONNECTED && millis() - lastReconnectMs >= 10000) {
+    lastReconnectMs = millis();
+    WiFi.disconnect();
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  }
   ensureMqtt();
   mqtt.loop();
   if (WiFi.status() != WL_CONNECTED) {
