@@ -7,3 +7,7 @@ numpy>=1.26
 opencv-python-headless>=4.9
 ultralytics>=8.3
 paho-mqtt>=2.1
+
+streamlit>=1.37,<2
+pandas>=2.2,<3
+requests>=2.32,<3
