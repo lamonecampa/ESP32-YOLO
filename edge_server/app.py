@@ -144,6 +144,18 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
         capture_ms = x_capture_timestamp_ms
         age_ms = max(0.0, time.time() * 1000 - capture_ms) if capture_ms else None
         detections = runtime.infer(decoded)
+        display_bytes = data
+        if detections:
+            annotated = decoded.copy()
+            for detection in detections:
+                x1, y1, x2, y2 = [int(v) for v in detection["xyxy"]]
+                label = f'{detection["class_name"]} {detection["confidence"]:.2f}'
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), (40, 220, 120), 2)
+                cv2.putText(annotated, label, (x1, max(18, y1 - 7)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (40, 220, 120), 2)
+            encoded_ok, encoded = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+            if encoded_ok:
+                display_bytes = encoded.tobytes()
         inference_ms = (time.perf_counter() - started) * 1000
         max_conf = max((d["confidence"] for d in detections), default=0.0)
         urgency = 1.0 if any(d["class_id"] == 0 for d in detections) else 0.0
@@ -173,7 +185,7 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
             "priority": priority,
         }
         with runtime.lock:
-            runtime.latest_frames[x_camera_id] = data
+            runtime.latest_frames[x_camera_id] = display_bytes
             runtime.counters["frames_received"] += 1
             runtime.counters["bytes_received"] += len(data)
             runtime.counters["detections"] += len(detections)
