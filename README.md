@@ -39,7 +39,9 @@ cp config/server.example.yaml config/server.yaml
 python -m edge_server.app --config config/server.yaml
 ```
 
-Open `http://<PI_IP>:8000/docs` for the API. Start the optional dashboard in a second terminal with `streamlit run edge_server/dashboard.py` and set `EDGE_API_URL=http://127.0.0.1:8000` if needed. The server defaults to a safe CPU-friendly configuration and will use a locally available model file when configured. It does not download model weights automatically.
+Open `http://<PI_IP>:8000/` for the NOVIX responsive web dashboard and `http://<PI_IP>:8000/docs` for the API documentation. The dashboard includes overview metrics, multi-camera live frame panels (MJPEG), detection logs, alerts, system counters, and supported camera settings. The browser polls the API every 5 seconds; camera panels update whenever new JPEG frames arrive. The server defaults to a CPU-friendly configuration and uses a locally available model file when configured. It does not download model weights automatically.
+
+The legacy Streamlit research monitor remains available with `streamlit run edge_server/dashboard.py`.
 
 ## ESP32-CAM firmware
 1. Install Arduino IDE and the Espressif ESP32 board package.
@@ -57,9 +59,26 @@ Firmware sends JPEG frames to `POST /api/v1/frames` and publishes status/control
 - `POST /api/v1/frames`: JPEG upload; headers `X-Camera-ID`, `X-Capture-Timestamp-Ms`.
 - `GET /api/v1/metrics`: aggregate counters and latency summaries.
 - `GET /api/v1/events`: recent detection events.
+- `GET /api/v1/cameras/{camera_id}/snapshot`: latest JPEG frame.
+- `GET /api/v1/cameras/{camera_id}/stream`: MJPEG stream of newly received frames.
+- `POST /api/v1/control/{camera_id}`: publish supported camera settings through MQTT (requires MQTT enabled).
 
 ## Research integrity
 Record firmware version, model file checksum, input dimensions, confidence/IoU thresholds, camera placement, lighting, network conditions, and all policy settings for each experiment. Keep continuous-video ground truth independent of transmitted frames to measure missed events. The included AEBAS policy is a prototype for controlled experiments, not a validated optimal algorithm.
 
 ## License
 MIT. See [LICENSE](LICENSE).
+
+
+## NOVIX web dashboard
+
+The web UI is served by the same FastAPI process; no separate frontend build is required. Start the edge server, then open:
+
+- Dashboard: `http://<PI_IP>:8000/`
+- API docs: `http://<PI_IP>:8000/docs`
+
+For camera controls, configure the MQTT broker in `config/server.yaml` and set `mqtt.enabled: true`. The current firmware accepts `capture_interval_ms`, `streaming_enabled`, and `resolution` (QVGA/VGA) on `<topic_prefix>/<camera_id>/control`. Keep MQTT credentials private. The web UI deliberately does not show motor movement controls because the current ESP32-CAM firmware does not implement a motor driver.
+
+The live camera panel displays the newest JPEG uploaded by each camera. Its effective update rate is therefore limited by the ESP32-CAM capture interval and network upload rate; it is not a full-frame-rate video stream. Host CPU/RAM/temperature, camera battery, and Wi-Fi RSSI are not reported by the current edge API and are not displayed as invented values.
+
+**Network security:** use this dashboard on a trusted LAN during development. Do not expose port 8000 or the MQTT broker directly to the public internet without authentication, TLS, firewall rules, and an access-control design.
