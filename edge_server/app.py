@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import asyncio
 import threading
 import time
 from collections import defaultdict, deque
@@ -13,7 +14,9 @@ import cv2
 import numpy as np
 import yaml
 from fastapi import FastAPI, File, Header, HTTPException, Query, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+import paho.mqtt.publish as mqtt_publish
 from ultralytics import YOLO
 
 from edge_server.scheduler.policies import CameraSignal, SchedulerConfig, priority_score, classify_priority
@@ -26,6 +29,8 @@ class Runtime:
         self.config = config
         self.lock = threading.Lock()
         self.cameras: dict[str, dict[str, Any]] = {}
+        self.latest_frames: dict[str, bytes] = {}
+        self.mqtt_cfg = config.get("mqtt", {})
         self.events = deque(maxlen=int(config["server"].get("recent_event_limit", 500)))
         self.counters = defaultdict(int)
         self.latencies_ms = deque(maxlen=2000)
@@ -168,6 +173,7 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
             "priority": priority,
         }
         with runtime.lock:
+            runtime.latest_frames[x_camera_id] = data
             runtime.counters["frames_received"] += 1
             runtime.counters["bytes_received"] += len(data)
             runtime.counters["detections"] += len(detections)
@@ -199,6 +205,77 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
     def events(limit: int = Query(default=50, ge=1, le=500)):
         with runtime.lock:
             return {"events": list(runtime.events)[-limit:]}
+
+
+    @app.get("/api/v1/cameras/{camera_id}/snapshot")
+    def camera_snapshot(camera_id: str):
+        with runtime.lock:
+            frame = runtime.latest_frames.get(camera_id)
+        if frame is None:
+            raise HTTPException(status_code=404, detail="No frame received from this camera yet")
+        return Response(content=frame, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/v1/cameras/{camera_id}/stream")
+    async def camera_stream(camera_id: str):
+        with runtime.lock:
+            known = camera_id in runtime.cameras
+        if not known:
+            raise HTTPException(status_code=404, detail="Unknown camera")
+        async def frame_generator():
+            last_frame = None
+            while True:
+                with runtime.lock:
+                    frame = runtime.latest_frames.get(camera_id)
+                if frame is not None and frame is not last_frame:
+                    last_frame = frame
+                    yield b"--frame\r\nContent-Type: image/jpeg\r\nCache-Control: no-store\r\n\r\n" + frame + b"\r\n"
+                await asyncio.sleep(0.15)
+        return StreamingResponse(frame_generator(), media_type="multipart/x-mixed-replace; boundary=frame",
+                                 headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"})
+
+    @app.post("/api/v1/control/{camera_id}")
+    def control_camera(camera_id: str, command: dict[str, Any]):
+        mqtt_cfg = runtime.mqtt_cfg
+        if not mqtt_cfg.get("enabled", False):
+            raise HTTPException(status_code=503, detail="MQTT control is disabled in server configuration")
+        with runtime.lock:
+            known = camera_id in runtime.cameras
+        if not known:
+            raise HTTPException(status_code=404, detail="Unknown camera")
+        allowed: dict[str, Any] = {}
+        if "capture_interval_ms" in command:
+            interval = command["capture_interval_ms"]
+            if not isinstance(interval, int) or not 250 <= interval <= 60000:
+                raise HTTPException(status_code=422, detail="capture_interval_ms must be 250..60000")
+            allowed["capture_interval_ms"] = interval
+        if "streaming_enabled" in command:
+            if not isinstance(command["streaming_enabled"], bool):
+                raise HTTPException(status_code=422, detail="streaming_enabled must be boolean")
+            allowed["streaming_enabled"] = command["streaming_enabled"]
+        if "resolution" in command:
+            resolution = str(command["resolution"]).upper()
+            if resolution not in ("QVGA", "VGA"):
+                raise HTTPException(status_code=422, detail="resolution must be QVGA or VGA")
+            allowed["resolution"] = resolution
+        if not allowed:
+            raise HTTPException(status_code=422, detail="No supported camera command supplied")
+        topic = f"{mqtt_cfg.get('topic_prefix', 'esp32yolo')}/{camera_id}/control"
+        try:
+            mqtt_publish.single(topic, payload=__import__("json").dumps(allowed),
+                hostname=str(mqtt_cfg.get("host", "127.0.0.1")), port=int(mqtt_cfg.get("port", 1883)),
+                auth=({"username": mqtt_cfg.get("username"), "password": mqtt_cfg.get("password")}
+                      if mqtt_cfg.get("username") else None), qos=1, retain=False, keepalive=10)
+        except Exception as exc:
+            LOG.exception("MQTT command failed for %s", camera_id)
+            raise HTTPException(status_code=502, detail=f"MQTT publish failed: {exc}") from exc
+        return {"status": "published", "camera_id": camera_id, "topic": topic, "command": allowed}
+
+    web_dir = Path(__file__).resolve().parent / "web"
+    if web_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(web_dir)), name="assets")
+        @app.get("/", include_in_schema=False)
+        def web_dashboard():
+            return FileResponse(web_dir / "index.html")
 
     return app
 
